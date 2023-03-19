@@ -13,9 +13,15 @@
 #define SENSOR_POWER 13
 #define BATTERY_POWER 14
 
+#define BATTERY_MIN 400
+#define SEK_TIMEOUT_NORMAL 30
+#define SEK_TIMEOUT_SETUP 60
+#define INTERVAL_RETRY 60e6
+
 bool setup_mode = false;
 bool blink_state = false;
 long last_blink = 0;
+int interval_sek = 3600;
 
 String ap_name = "SoilMoisture";
 IPAddress local_ip(192,168,1,1);
@@ -37,6 +43,10 @@ void writeEEPROM(String data, uint8_t offset = 0) {
   EEPROM.write(offset + data.length(), 0x00);
 }
 
+int getBatteryPercentage(int battery) {
+  return 2e-16*pow(battery, 6) - 1e-12*pow(battery, 5) + 2e-9*pow(battery, 4) - 2e-6*pow(battery, 3) + 0.0009*pow(battery, 2) - 0.1934*battery + 490.22;
+}
+
 ESP8266WebServer server(80);
 
 void handleConnection() {
@@ -46,20 +56,25 @@ void handleConnection() {
 void handleSubmit() {
   String ssid = server.arg("ssid");
   String password = server.arg("password");
+  String interval = server.arg("interval");
   Serial.print("SSID: ");
   Serial.println(ssid);
   Serial.print("Password: ");
   Serial.println(password);
+  Serial.print("Interval: ");
+  Serial.println(interval);
 
   writeEEPROM(ssid);
   writeEEPROM(password, 32);
+  writeEEPROM(interval, 96);
   EEPROM.commit();
 
   server.send(200, "text/html", SUBMIT_HTML);
+  server.handleClient();
+  delay(1000);
 
   WiFi.softAPdisconnect();
   server.stop();
-
   ESP.reset();
 }
 
@@ -105,11 +120,15 @@ void setup() {
 
   String ssid = readEEPROM(0, 32);
   String password = readEEPROM(32, 64);
+  int interval = readEEPROM(96, 5).toInt();
+  if(interval > 0 && interval <= 3600) interval_sek = interval;
 
   Serial.print("EEPROM SSID: ");
   Serial.println(ssid);
   Serial.print("EEPROM Password: ");
   Serial.println(password);
+  Serial.print("EEPROM Interval: ");
+  Serial.println(interval_sek);
 
   if(ssid.length() > 0) {
     WiFi.begin(ssid, password);
@@ -155,7 +174,7 @@ void loop() {
 
       int battery_value = analogRead(A0);
       String battery_topic = "soilmoisture/" + WiFi.macAddress() + "/battery";
-      client.publish(battery_topic.c_str(), String(battery_value).c_str());
+      client.publish(battery_topic.c_str(), String(getBatteryPercentage(battery_value)).c_str());
       client.loop();
 
       digitalWrite(ANALOG_POWER, LOW);
@@ -166,13 +185,9 @@ void loop() {
       client.disconnect();
       WiFi.disconnect();
       espClient.stop();
-
-      int button_state = digitalRead(BUTTON);
-      if(button_state == HIGH) setupMode();
-      else {
-        ESP.deepSleep(30e6);
-        delay(1000);
-      }
+      
+      ESP.deepSleep(battery_value > BATTERY_MIN ? interval_sek * 1e6 : 0);
+      delay(1000);
     } else {
       if(millis() - last_blink > 1000) {
         digitalWrite(LED_BUILTIN, blink_state ? LOW : HIGH);
@@ -182,8 +197,9 @@ void loop() {
     }
   }
 
-  if(millis() > 30e6) {
-    ESP.deepSleep(60e6);
+  if(millis() > (setup_mode ? 1000UL * SEK_TIMEOUT_SETUP : 1000UL * SEK_TIMEOUT_NORMAL)) {
+    Serial.println("running for too long");
+    ESP.deepSleep(INTERVAL_RETRY);
     delay(1000);
   }
 }
