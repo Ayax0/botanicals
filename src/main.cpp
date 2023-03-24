@@ -6,6 +6,7 @@
 
 #include "index.h"
 #include "submit.h"
+#include "battery_lut.h"
 
 #define BUTTON 5
 #define ANALOG_POWER 4
@@ -41,10 +42,6 @@ String readEEPROM(uint8_t offset = 0, uint8_t max_length = 32) {
 void writeEEPROM(String data, uint8_t offset = 0) {
   for(uint8_t i = 0; i < data.length(); i++) EEPROM.write(offset + i, data[i]);
   EEPROM.write(offset + data.length(), 0x00);
-}
-
-int getBatteryPercentage(int battery) {
-  return 2e-16*pow(battery, 6) - 1e-12*pow(battery, 5) + 2e-9*pow(battery, 4) - 2e-6*pow(battery, 3) + 0.0009*pow(battery, 2) - 0.1934*battery + 490.22;
 }
 
 ESP8266WebServer server(80);
@@ -173,8 +170,12 @@ void loop() {
       delay(10);
 
       int battery_value = analogRead(A0);
+      int battery_percentage = 100;
+      if(battery_value < 400) battery_percentage = 0;
+      else if(battery_value <= 490) battery_percentage = battery_level[battery_value - 400];
+
       String battery_topic = "soilmoisture/" + WiFi.macAddress() + "/battery";
-      client.publish(battery_topic.c_str(), String(getBatteryPercentage(battery_value)).c_str());
+      client.publish(battery_topic.c_str(), String(battery_percentage).c_str());
       client.loop();
 
       digitalWrite(ANALOG_POWER, LOW);
